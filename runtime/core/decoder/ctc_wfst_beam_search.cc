@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #include "decoder/ctc_wfst_beam_search.h"
 
 #include <utility>
@@ -79,7 +78,7 @@ void CtcWfstBeamSearch::Search(const std::vector<std::vector<float>>& logp) {
   // Every time we get the log posterior, we decode it all before return
   for (int i = 0; i < logp.size(); i++) {
     float blank_score = std::exp(logp[i][0]);
-    if (blank_score > opts_.blank_skip_thresh) {
+    if (blank_score > opts_.blank_skip_thresh * opts_.blank_scale) {
       VLOG(3) << "skipping frame " << num_frames_ << " score " << blank_score;
       is_last_frame_blank_ = true;
       last_frame_prob_ = logp[i];

@@ -2,14 +2,13 @@ cmake_minimum_required(VERSION 3.14 FATAL_ERROR)
 
 project(wenet VERSION 0.1)
 
-set(TORCH ON)  # Use torch for binding backend
-set(ONNX OFF)  # ONNX is not used
+option(TORCH "whether to build with Torch" ON)
+option(ONNX "whether to build with ONNX" OFF)
 set(CXX11_ABI OFF)
 set(FST_HAVE_BIN OFF)
 set(CMAKE_VERBOSE_MAKEFILE OFF)
 
 include(FetchContent)
-include(ExternalProject)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(FETCHCONTENT_QUIET OFF)
@@ -26,7 +25,12 @@ else()
   add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
 endif()
 
-include(libtorch)
+if(TORCH)
+  include(libtorch)
+endif()
+if(ONNX)
+  include(onnx)
+endif()
 include(openfst)
 include(pybind11)
 
@@ -36,9 +40,6 @@ include_directories(
 )
 
 add_subdirectory(utils)
-if(NOT MSVC)
-  add_dependencies(utils openfst)
-endif()
 add_subdirectory(frontend)
 add_subdirectory(post_processor)
 add_subdirectory(kaldi)  # kaldi: wfst based decoder

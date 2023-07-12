@@ -2,7 +2,6 @@ from typing import Optional
 
 import torch
 from torch import nn
-from typeguard import check_argument_types
 from wenet.utils.common import get_activation
 
 
@@ -17,7 +16,6 @@ class TransducerJoint(torch.nn.Module):
                  postjoin_linear: bool = False,
                  joint_mode: str = 'add',
                  activation: str = "tanh"):
-        assert check_argument_types()
         # TODO(Mddct): concat in future
         assert joint_mode in ['add']
         super().__init__()
@@ -38,11 +36,14 @@ class TransducerJoint(torch.nn.Module):
         # torchscript compatibility
         self.post_ffn: Optional[nn.Linear] = None
         if self.postjoin_linear:
-            self.post_ffn = nn.Linear(enc_output_size, join_dim)
+            self.post_ffn = nn.Linear(join_dim, join_dim)
 
         self.ffn_out = nn.Linear(join_dim, voca_size)
 
-    def forward(self, enc_out: torch.Tensor, pred_out: torch.Tensor):
+    def forward(self,
+                enc_out: torch.Tensor,
+                pred_out: torch.Tensor,
+                pre_project: bool = True) -> torch.Tensor:
         """
         Args:
             enc_out (torch.Tensor): [B, T, E]
@@ -50,13 +51,14 @@ class TransducerJoint(torch.nn.Module):
         Return:
             [B,T,U,V]
         """
-        if (self.prejoin_linear and self.enc_ffn is not None
+        if (pre_project and self.prejoin_linear and self.enc_ffn is not None
                 and self.pred_ffn is not None):
             enc_out = self.enc_ffn(enc_out)  # [B,T,E] -> [B,T,V]
             pred_out = self.pred_ffn(pred_out)
-
-        enc_out = enc_out.unsqueeze(2)  # [B,T,V] -> [B,T,1,V]
-        pred_out = pred_out.unsqueeze(1)  # [B,U,V] -> [B,1 U, V]
+        if enc_out.ndim != 4:
+            enc_out = enc_out.unsqueeze(2)  # [B,T,V] -> [B,T,1,V]
+        if pred_out.ndim != 4:
+            pred_out = pred_out.unsqueeze(1)  # [B,U,V] -> [B,1 U, V]
 
         # TODO(Mddct): concat joint
         _ = self.joint_mode

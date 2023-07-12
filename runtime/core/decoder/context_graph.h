@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #ifndef DECODER_CONTEXT_GRAPH_H_
 #define DECODER_CONTEXT_GRAPH_H_
 
@@ -32,6 +31,7 @@ struct ContextConfig {
   int max_contexts = 5000;
   int max_context_length = 100;
   float context_score = 3.0;
+  float incremental_context_score = 0.0;
 };
 
 class ContextGraph {
@@ -46,6 +46,11 @@ class ContextGraph {
   int end_tag_id() { return end_tag_id_; }
 
  private:
+  bool SplitUTF8StringToWords(
+      const std::string& str,
+      const std::shared_ptr<fst::SymbolTable>& symbol_table,
+      std::vector<std::string>* words);
+
   int start_tag_id_ = -1;
   int end_tag_id_ = -1;
   ContextConfig config_;

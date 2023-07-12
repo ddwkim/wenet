@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 #include "decoder/context_graph.h"
 
 #include <utility>
@@ -20,6 +19,7 @@
 #include "fst/determinize.h"
 
 #include "utils/string.h"
+#include "utils/utils.h"
 
 namespace wenet {
 
@@ -65,7 +65,9 @@ void ContextGraph::BuildContextGraph(
     float escape_score = 0;
     for (size_t i = 0; i < words.size(); ++i) {
       int word_id = symbol_table_->Find(words[i]);
-      float score = config_.context_score * UTF8StringLength(words[i]);
+      float score =
+          (i * config_.incremental_context_score + config_.context_score) *
+          UTF8StringLength(words[i]);
       next_state = (i < words.size() - 1) ? ofst->AddState() : start_state;
       ofst->AddArc(prev_state,
                    fst::StdArc(word_id, word_id, score, next_state));
@@ -105,6 +107,45 @@ int ContextGraph::GetNextState(int cur_state, int word_id, float* score,
     }
   }
   return next_state;
+}
+
+bool ContextGraph::SplitUTF8StringToWords(
+    const std::string& str,
+    const std::shared_ptr<fst::SymbolTable>& symbol_table,
+    std::vector<std::string>* words) {
+  std::vector<std::string> chars;
+  SplitUTF8StringToChars(Trim(str), &chars);
+
+  bool no_oov = true;
+  for (size_t start = 0; start < chars.size();) {
+    for (size_t end = chars.size(); end > start; --end) {
+      std::string word;
+      for (size_t i = start; i < end; i++) {
+        word += chars[i];
+      }
+      // Skip space.
+      if (word == " ") {
+        start = end;
+        continue;
+      }
+      // Add '▁' at the beginning of English word.
+      if (IsAlpha(word)) {
+        word = kSpaceSymbol + word;
+      }
+
+      if (symbol_table->Find(word) != -1) {
+        words->emplace_back(word);
+        start = end;
+        continue;
+      }
+      if (end == start + 1) {
+        ++start;
+        no_oov = false;
+        LOG(WARNING) << word << " is oov.";
+      }
+    }
+  }
+  return no_oov;
 }
 
 }  // namespace wenet

@@ -1,4 +1,4 @@
-# WeNet Python Binding
+# Python Binding
 
 This is a python binding of WeNet.
 
@@ -16,22 +16,27 @@ The best things of the binding are:
 Python 3.6+ is required.
 
 ``` sh
-pip3 install wenet
+pip3 install wenetruntime
 ```
 
 ## Usage
+
+Note:
+
+1. For macOS, wenetruntime packed `libtorch.so`, so we can't import torch and wenetruntime at the same time.
+2. For Windows and Linux, wenetruntime depends on torch. Please install and import the same version `torch` as wenetruntime.
 
 ### Non-streaming Usage
 
 ``` python
 import sys
-import wenet
+import torch
+import wenetruntime as wenet
 
 wav_file = sys.argv[1]
 decoder = wenet.Decoder(lang='chs')
 ans = decoder.decode_wav(wav_file)
 print(ans)
-# call decoder.reset() if you want to do the next decoding
 ```
 
 You can also specify the following parameter in `wenet.Decoder`
@@ -67,8 +72,9 @@ decoder = wenet.Decoder(model_dir,
 
 ``` python
 import sys
+import torch
 import wave
-import wenet
+import wenetruntime as wenet
 
 test_wav = sys.argv[1]
 
@@ -92,7 +98,7 @@ You can use the same parameters as we introduced above to control the behavior o
 ## Build on Your Local Machine
 
 ``` sh
-git clone git@github.com:wenet-e2e/wenet.git
+git clone https://github.com/wenet-e2e/wenet.git
 cd wenet/runtime/binding/python
 python setup.py install
 ```

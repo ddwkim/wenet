@@ -167,7 +167,7 @@ def th_accuracy(pad_outputs: torch.Tensor, pad_targets: torch.Tensor,
 
     Args:
         pad_outputs (Tensor): Prediction tensors (B * Lmax, D).
-        pad_targets (LongTensor): Target label tensors (B, Lmax, D).
+        pad_targets (LongTensor): Target label tensors (B, Lmax).
         ignore_label (int): Ignore label id.
 
     Returns:
@@ -229,6 +229,19 @@ def remove_duplicates_and_blank(hyp: List[int]) -> List[int]:
             new_hyp.append(hyp[cur])
         prev = cur
         while cur < len(hyp) and hyp[cur] == hyp[prev]:
+            cur += 1
+    return new_hyp
+
+
+def replace_duplicates_with_blank(hyp: List[int]) -> List[int]:
+    new_hyp: List[int] = []
+    cur = 0
+    while cur < len(hyp):
+        new_hyp.append(hyp[cur])
+        prev = cur
+        cur += 1
+        while cur < len(hyp) and hyp[cur] == hyp[prev] and hyp[cur] != 0:
+            new_hyp.append(0)
             cur += 1
     return new_hyp
 

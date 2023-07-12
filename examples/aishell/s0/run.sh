@@ -48,12 +48,18 @@ train_config=conf/train_conformer.yaml
 cmvn=true
 dir=exp/conformer
 checkpoint=
+num_workers=8
+prefetch=500
 
 # use average_checkpoint will get better result
 average_checkpoint=true
 decode_checkpoint=$dir/final.pt
 average_num=30
 decode_modes="ctc_greedy_search ctc_prefix_beam_search attention attention_rescoring"
+
+deepspeed=false
+deepspeed_config=conf/ds_stage2.json
+deepspeed_save_states="model_only"
 
 . tools/parse_options.sh || exit 1;
 
@@ -116,11 +122,12 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
   # You have to rm `INIT_FILE` manually when you resume or restart a
   # multi-machine training.
   INIT_FILE=$dir/ddp_init
+  rm -f ${INIT_FILE}  # remove previous INIT_FILE
   init_method=file://$(readlink -f $INIT_FILE)
   echo "$0: init method is $init_method"
   num_gpus=$(echo $CUDA_VISIBLE_DEVICES | awk -F "," '{print NF}')
   # Use "nccl" if it works, otherwise use "gloo"
-  dist_backend="gloo"
+  dist_backend="nccl"
   world_size=`expr $num_gpus \* $num_nodes`
   echo "total gpus is: $world_size"
   cmvn_opts=
@@ -130,30 +137,60 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
   # train.py rewrite $train_config to $dir/train.yaml with model input
   # and output dimension, and $dir/train.yaml will be used for inference
   # and export.
-  for ((i = 0; i < $num_gpus; ++i)); do
-  {
-    gpu_id=$(echo $CUDA_VISIBLE_DEVICES | cut -d',' -f$[$i+1])
-    # Rank of each gpu/process used for knowing whether it is
-    # the master of a worker.
-    rank=`expr $node_rank \* $num_gpus + $i`
-    python wenet/bin/train.py --gpu $gpu_id \
-      --config $train_config \
-      --data_type $data_type \
-      --symbol_table $dict \
-      --train_data data/$train_set/data.list \
-      --cv_data data/dev/data.list \
-      ${checkpoint:+--checkpoint $checkpoint} \
-      --model_dir $dir \
-      --ddp.init_method $init_method \
-      --ddp.world_size $world_size \
-      --ddp.rank $rank \
-      --ddp.dist_backend $dist_backend \
-      --num_workers 1 \
-      $cmvn_opts \
-      --pin_memory
-  } &
-  done
-  wait
+  if [ ${deepspeed} == true ]; then
+    echo "using deepspeed"
+    # NOTE(xcsong): deepspeed fails with gloo, see
+    #   https://github.com/microsoft/DeepSpeed/issues/2818
+    dist_backend="nccl"
+    [ ! -f data/$train_set/data.list.filter ] && \
+      python tools/filter_uneven_data.py data/$train_set/data.list \
+        $data_type $num_gpus $num_utts_per_shard data/$train_set/data.list.filter
+    deepspeed --include localhost:$CUDA_VISIBLE_DEVICES \
+      wenet/bin/train.py \
+        --deepspeed \
+        --deepspeed_config ${deepspeed_config} \
+        --deepspeed.save_states ${deepspeed_save_states} \
+        --ddp.dist_backend $dist_backend \
+        --ddp.init_method $init_method \
+        --data_type  $data_type \
+        --config $train_config \
+        --symbol_table  data/dict/lang_char.txt \
+        --train_data data/$train_set/data.list.filter \
+        --cv_data data/dev/data.list \
+        ${checkpoint:+--checkpoint $checkpoint} \
+        --model_dir $dir \
+        --num_workers ${num_workers} \
+        --prefetch ${prefetch} \
+        $cmvn_opts \
+        --pin_memory
+  else
+    echo "using torch ddp"
+    for ((i = 0; i < $num_gpus; ++i)); do
+    {
+      gpu_id=$(echo $CUDA_VISIBLE_DEVICES | cut -d',' -f$[$i+1])
+      # Rank of each gpu/process used for knowing whether it is
+      # the master of a worker.
+      rank=`expr $node_rank \* $num_gpus + $i`
+      python wenet/bin/train.py --gpu $gpu_id \
+        --config $train_config \
+        --data_type $data_type \
+        --symbol_table $dict \
+        --train_data data/$train_set/data.list \
+        --cv_data data/dev/data.list \
+        ${checkpoint:+--checkpoint $checkpoint} \
+        --model_dir $dir \
+        --ddp.init_method $init_method \
+        --ddp.world_size $world_size \
+        --ddp.rank $rank \
+        --ddp.dist_backend $dist_backend \
+        --num_workers ${num_workers} \
+        --prefetch ${prefetch} \
+        $cmvn_opts \
+        --pin_memory
+    } &
+    done
+    wait
+  fi
 fi
 
 if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
@@ -171,8 +208,8 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
   # non-streaming model. The default value is -1, which is full chunk
   # for non-streaming inference.
   decoding_chunk_size=
-  ctc_weight=0.5
-  reverse_weight=0.0
+  ctc_weight=0.3
+  reverse_weight=0.5
   for mode in ${decode_modes}; do
   {
     test_dir=$dir/test_${mode}
@@ -239,4 +276,63 @@ if [ ${stage} -le 7 ] && [ ${stop_stage} -ge 7 ]; then
   # Please see $dir/lm_with_runtime for wer
 fi
 
+# Optionally, you can decode with k2 hlg
+if [ ${stage} -le 8 ] && [ ${stop_stage} -ge 8 ]; then
+  if [ ! -f data/local/lm/lm.arpa ]; then
+    echo "Please run prepare dict and train lm in Stage 7" || exit 1;
+  fi
 
+  # 8.1 Build decoding HLG
+  required="data/local/hlg/HLG.pt data/local/hlg/words.txt"
+  for f in $required; do
+    if [ ! -f $f ]; then
+      tools/k2/make_hlg.sh data/local/dict/ data/local/lm/ data/local/hlg
+      break
+    fi
+  done
+
+  # 8.2 Decode using HLG
+  decoding_chunk_size=
+  lm_scale=0.7
+  decoder_scale=0.1
+  r_decoder_scale=0.7
+  for mode in hlg_onebest hlg_rescore; do
+  {
+    test_dir=$dir/test_${mode}
+    mkdir -p $test_dir
+    python wenet/bin/recognize.py --gpu 0 \
+      --mode $mode \
+      --config $dir/train.yaml \
+      --data_type $data_type \
+      --test_data data/test/data.list \
+      --checkpoint $decode_checkpoint \
+      --beam_size 10 \
+      --batch_size 16 \
+      --penalty 0.0 \
+      --dict $dict \
+      --word data/local/hlg/words.txt \
+      --hlg data/local/hlg/HLG.pt \
+      --lm_scale $lm_scale \
+      --decoder_scale $decoder_scale \
+      --r_decoder_scale $r_decoder_scale \
+      --result_file $test_dir/text \
+      ${decoding_chunk_size:+--decoding_chunk_size $decoding_chunk_size}
+    python tools/compute-wer.py --char=1 --v=1 \
+      data/test/text $test_dir/text > $test_dir/wer
+  }
+  done
+fi
+
+# Optionally, you can train with LF-MMI using k2
+# Based on 20210601_u2++_conformer_exp/final.pt, we train 50 epocs with 1e-5 lr
+# and average 10 best models, achieve 4.11 cer with hlg decoding
+# Actually, you can achieve even lower cer by tuning lm_scale/decoder_scale/r_decoder_scale
+if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ]; then
+  # 9.1 Build token level bigram fst for LF-MMI training
+  tools/k2/prepare_mmi.sh data/train/ data/dev data/local/lfmmi
+
+  # 9.2 Run LF-MMI training from stage 4, with below new args
+  # --lfmmi_dir data/local/lfmmi
+
+  # 9.3 Run HLG decode from stage 8.2
+fi
